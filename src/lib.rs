@@ -4,7 +4,6 @@ use futures::{
     Async, Poll,
 };
 use std::{
-    borrow::Cow,
     io,
     iter::Cloned,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs},
@@ -96,19 +95,19 @@ impl Stream for ProxyAddrsStream {
 
 /// A SOCKS connection target.
 #[derive(Debug, PartialEq, Eq)]
-pub enum TargetAddr<'a> {
+pub enum TargetAddr {
     /// Connect to an IP address.
     Ip(SocketAddr),
 
     /// Connect to a fully-qualified domain name.
     ///
     /// The domain name will be passed along to the proxy server and DNS lookup will happen there.
-    Domain(Cow<'a, str>, u16),
+    Domain(String, u16),
 }
 
-impl<'a> TargetAddr<'a> {
+impl TargetAddr {
     /// Creates owned `TargetAddr` by cloning. It is usually used to eliminate the lifetime bound.
-    pub fn to_owned(&self) -> TargetAddr<'static> {
+    pub fn to_owned(&self) -> TargetAddr {
         match self {
             TargetAddr::Ip(addr) => TargetAddr::Ip(*addr),
             TargetAddr::Domain(domain, port) => {
@@ -118,7 +117,7 @@ impl<'a> TargetAddr<'a> {
     }
 }
 
-impl<'a> ToSocketAddrs for TargetAddr<'a> {
+impl ToSocketAddrs for TargetAddr {
     type Iter = Either<std::option::IntoIter<SocketAddr>, std::vec::IntoIter<SocketAddr>>;
 
     fn to_socket_addrs(&self) -> io::Result<Self::Iter> {
@@ -132,15 +131,15 @@ impl<'a> ToSocketAddrs for TargetAddr<'a> {
 }
 
 /// A trait for objects that can be converted to `TargetAddr`.
-pub trait IntoTargetAddr<'a> {
+pub trait IntoTargetAddr {
     /// Converts the value of self to a `TargetAddr`.
-    fn into_target_addr(self) -> Result<TargetAddr<'a>>;
+    fn into_target_addr(self) -> Result<TargetAddr>;
 }
 
 macro_rules! trivial_impl_into_target_addr {
     ($t: ty) => {
-        impl<'a> IntoTargetAddr<'a> for $t {
-            fn into_target_addr(self) -> Result<TargetAddr<'a>> {
+        impl IntoTargetAddr for $t {
+            fn into_target_addr(self) -> Result<TargetAddr> {
                 Ok(TargetAddr::Ip(SocketAddr::from(self)))
             }
         }
@@ -154,8 +153,8 @@ trivial_impl_into_target_addr!((Ipv6Addr, u16));
 trivial_impl_into_target_addr!(SocketAddrV4);
 trivial_impl_into_target_addr!(SocketAddrV6);
 
-impl<'a> IntoTargetAddr<'a> for (&'a str, u16) {
-    fn into_target_addr(self) -> Result<TargetAddr<'a>> {
+impl IntoTargetAddr for (&str, u16) {
+    fn into_target_addr(self) -> Result<TargetAddr> {
         // Try IP address first
         if let Ok(addr) = self.0.parse::<IpAddr>() {
             return (addr, self.1).into_target_addr();
@@ -172,8 +171,8 @@ impl<'a> IntoTargetAddr<'a> for (&'a str, u16) {
     }
 }
 
-impl<'a> IntoTargetAddr<'a> for &'a str {
-    fn into_target_addr(self) -> Result<TargetAddr<'a>> {
+impl IntoTargetAddr for &str {
+    fn into_target_addr(self) -> Result<TargetAddr> {
         // Try IP address first
         if let Ok(addr) = self.parse::<SocketAddr>() {
             return addr.into_target_addr();
@@ -191,8 +190,8 @@ impl<'a> IntoTargetAddr<'a> for &'a str {
     }
 }
 
-impl IntoTargetAddr<'static> for (String, u16) {
-    fn into_target_addr(self) -> Result<TargetAddr<'static>> {
+impl IntoTargetAddr for (String, u16) {
+    fn into_target_addr(self) -> Result<TargetAddr> {
         let addr = (self.0.as_str(), self.1).into_target_addr()?;
         if let TargetAddr::Ip(addr) = addr {
             Ok(TargetAddr::Ip(addr))
@@ -202,26 +201,26 @@ impl IntoTargetAddr<'static> for (String, u16) {
     }
 }
 
-impl<'a, T> IntoTargetAddr<'a> for &'a T
+impl<T> IntoTargetAddr for &T
 where
-    T: IntoTargetAddr<'a> + Copy,
+    T: IntoTargetAddr + Copy,
 {
-    fn into_target_addr(self) -> Result<TargetAddr<'a>> {
+    fn into_target_addr(self) -> Result<TargetAddr> {
         (*self).into_target_addr()
     }
 }
 
 /// Authentication methods
 #[derive(Debug)]
-enum Authentication<'a> {
+enum Authentication {
     Password {
-        username: &'a str,
-        password: &'a str,
+        username: String,
+        password: String,
     },
     None,
 }
 
-impl<'a> Authentication<'a> {
+impl Authentication {
     fn id(&self) -> u8 {
         match self {
             Authentication::Password { .. } => 0x02,
@@ -268,9 +267,9 @@ mod tests {
         Ok(())
     }
 
-    fn into_target_addr<'a, T>(t: T) -> Result<TargetAddr<'a>>
+    fn into_target_addr<T>(t: T) -> Result<TargetAddr>
     where
-        T: IntoTargetAddr<'a>,
+        T: IntoTargetAddr,
     {
         t.into_target_addr()
     }
@@ -314,7 +313,7 @@ mod tests {
         let domain = "www.example.com:80";
         let res = into_target_addr(domain)?;
         assert_eq!(
-            TargetAddr::Domain(Cow::Borrowed("www.example.com"), 80),
+            TargetAddr::Domain("www.example.com".to_string(), 80),
             res
         );
         Ok(())
@@ -325,7 +324,7 @@ mod tests {
         let domain = "www.example.com";
         let res = into_target_addr((domain, 80))?;
         assert_eq!(
-            TargetAddr::Domain(Cow::Borrowed("www.example.com"), 80),
+            TargetAddr::Domain("www.example.com".to_string(), 80),
             res
         );
         Ok(())

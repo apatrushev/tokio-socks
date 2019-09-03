@@ -23,7 +23,7 @@ enum Command {
 pub struct Socks5Stream {
     #[deref(mutable)]
     tcp: TcpStream,
-    target: TargetAddr<'static>,
+    target: TargetAddr,
 }
 
 impl Socks5Stream {
@@ -32,10 +32,10 @@ impl Socks5Stream {
     /// # Error
     ///
     /// It propagates the error that occurs in the conversion from `T` to `TargetAddr`.
-    pub fn connect<'t, P, T>(proxy: P, target: T) -> Result<ConnectFuture<'static, 't, P::Output>>
+    pub fn connect<P, T>(proxy: P, target: T) -> Result<ConnectFuture<P::Output>>
     where
         P: ToProxyAddrs,
-        T: IntoTargetAddr<'t>,
+        T: IntoTargetAddr,
     {
         Self::connect_raw(proxy, target, Authentication::None, Command::Connect)
     }
@@ -45,35 +45,35 @@ impl Socks5Stream {
     /// # Error
     ///
     /// It propagates the error that occurs in the conversion from `T` to `TargetAddr`.
-    pub fn connect_with_password<'a, 't, P, T>(
+    pub fn connect_with_password<P, T>(
         proxy: P,
         target: T,
-        username: &'a str,
-        password: &'a str,
-    ) -> Result<ConnectFuture<'a, 't, P::Output>>
+        username: &str,
+        password: &str,
+    ) -> Result<ConnectFuture<P::Output>>
     where
         P: ToProxyAddrs,
-        T: IntoTargetAddr<'t>,
+        T: IntoTargetAddr,
     {
         Self::connect_raw(
             proxy,
             target,
-            Authentication::Password { username, password },
+            Authentication::Password { username: username.to_string(), password: password.to_string() },
             Command::Connect,
         )
     }
 
-    fn connect_raw<'a, 't, P, T>(
+    fn connect_raw<P, T>(
         proxy: P,
         target: T,
-        auth: Authentication<'a>,
+        auth: Authentication,
         command: Command,
-    ) -> Result<ConnectFuture<'a, 't, P::Output>>
+    ) -> Result<ConnectFuture<P::Output>>
     where
         P: ToProxyAddrs,
-        T: IntoTargetAddr<'t>,
+        T: IntoTargetAddr,
     {
-        if let Authentication::Password { username, password } = auth {
+        let auth = if let Authentication::Password { username, password } = auth {
             let username_len = username.as_bytes().len();
             if username_len < 1 || username_len > 255 {
                 Err(Error::InvalidAuthValues(
@@ -86,7 +86,10 @@ impl Socks5Stream {
                     "password length should between 1 to 255",
                 ))?
             }
-        }
+            Authentication::Password { username, password }
+        } else {
+            auth
+        };
         Ok(ConnectFuture::new(
             auth,
             command,
@@ -113,25 +116,25 @@ impl Socks5Stream {
 }
 
 /// A `Future` which resolves to a socket to the target server through proxy.
-pub struct ConnectFuture<'a, 't, S>
+pub struct ConnectFuture<S>
 where
     S: Stream<Item = SocketAddr, Error = Error>,
 {
-    auth: Authentication<'a>,
+    auth: Authentication,
     command: Command,
     proxy: S,
-    target: TargetAddr<'t>,
+    target: TargetAddr,
     state: ConnectState,
     buf: [u8; 513],
     ptr: usize,
     len: usize,
 }
 
-impl<'a, 't, S> ConnectFuture<'a, 't, S>
+impl<S> ConnectFuture<S>
 where
     S: Stream<Item = SocketAddr, Error = Error>,
 {
-    fn new(auth: Authentication<'a>, command: Command, proxy: S, target: TargetAddr<'t>) -> Self {
+    fn new(auth: Authentication, command: Command, proxy: S, target: TargetAddr) -> Self {
         ConnectFuture {
             auth,
             command,
@@ -165,7 +168,7 @@ where
     }
 
     fn prepare_send_password_auth(&mut self) {
-        if let Authentication::Password { username, password } = self.auth {
+        if let Authentication::Password { username, password } = &self.auth {
             self.ptr = 0;
             self.buf[0] = 0x01;
             let username_bytes = username.as_bytes();
@@ -221,7 +224,7 @@ where
     }
 }
 
-impl<'a, 't, S> Future for ConnectFuture<'a, 't, S>
+impl<S> Future for ConnectFuture<S>
 where
     S: Stream<Item = SocketAddr, Error = Error>,
 {
@@ -358,7 +361,7 @@ where
                     let tcp = opt.as_mut().unwrap();
                     self.ptr += try_ready!(tcp.poll_read(&mut self.buf[self.ptr..self.len]));
                     if self.ptr == self.len {
-                        let target: TargetAddr<'static> = match self.buf[3] {
+                        let target: TargetAddr = match self.buf[3] {
                             // IPv4
                             0x01 => {
                                 let mut ip = [0; 4];
@@ -433,10 +436,10 @@ impl Socks5Listener {
     /// # Error
     ///
     /// It propagates the error that occurs in the conversion from `T` to `TargetAddr`.
-    pub fn bind<'t, P, T>(proxy: P, target: T) -> Result<BindFuture<'static, 't, P::Output>>
+    pub fn bind<P, T>(proxy: P, target: T) -> Result<BindFuture<P::Output>>
     where
         P: ToProxyAddrs,
-        T: IntoTargetAddr<'t>,
+        T: IntoTargetAddr,
     {
         Ok(BindFuture(ConnectFuture::new(
             Authentication::None,
@@ -455,18 +458,18 @@ impl Socks5Listener {
     /// # Error
     ///
     /// It propagates the error that occurs in the conversion from `T` to `TargetAddr`.
-    pub fn bind_with_password<'a, 't, P, T>(
+    pub fn bind_with_password<P, T>(
         proxy: P,
         target: T,
-        username: &'a str,
-        password: &'a str,
-    ) -> Result<BindFuture<'a, 't, P::Output>>
+        username: &str,
+        password: &str,
+    ) -> Result<BindFuture<P::Output>>
     where
         P: ToProxyAddrs,
-        T: IntoTargetAddr<'t>,
+        T: IntoTargetAddr,
     {
         Ok(BindFuture(ConnectFuture::new(
-            Authentication::Password { username, password },
+            Authentication::Password { username: username.to_string(), password: password.to_string() },
             Command::Bind,
             proxy.to_proxy_addrs(),
             target.into_target_addr()?,
@@ -506,11 +509,11 @@ impl Socks5Listener {
 ///
 /// After this future is resolved, the SOCKS5 client has finished the negotiation
 /// with the proxy server.
-pub struct BindFuture<'a, 't, S>(ConnectFuture<'a, 't, S>)
+pub struct BindFuture<S>(ConnectFuture<S>)
 where
     S: Stream<Item = SocketAddr, Error = Error>;
 
-impl<'a, 't, S> Future for BindFuture<'a, 't, S>
+impl<S> Future for BindFuture<S>
 where
     S: Stream<Item = SocketAddr, Error = Error>,
 {
@@ -558,13 +561,13 @@ impl AsyncWrite for Socks5Stream {
     }
 }
 
-impl<'a> Read for &'a Socks5Stream {
+impl Read for &Socks5Stream {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         Read::read(&mut &self.tcp, buf)
     }
 }
 
-impl<'a> Write for &'a Socks5Stream {
+impl Write for &Socks5Stream {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         Write::write(&mut &self.tcp, buf)
     }
@@ -574,7 +577,7 @@ impl<'a> Write for &'a Socks5Stream {
     }
 }
 
-impl<'a> AsyncRead for &'a Socks5Stream {
+impl AsyncRead for &Socks5Stream {
     unsafe fn prepare_uninitialized_buffer(&self, buf: &mut [u8]) -> bool {
         AsyncRead::prepare_uninitialized_buffer(&self.tcp, buf)
     }
@@ -584,7 +587,7 @@ impl<'a> AsyncRead for &'a Socks5Stream {
     }
 }
 
-impl<'a> AsyncWrite for &'a Socks5Stream {
+impl AsyncWrite for &Socks5Stream {
     fn shutdown(&mut self) -> Poll<(), io::Error> {
         AsyncWrite::shutdown(&mut &self.tcp)
     }
